@@ -1,102 +1,75 @@
 #!/usr/bin/env python3
 
 from typing import Dict, Set
-from collections import deque
 
 
 class ASCIIGraphRenderer:
 
-    def __init__(self, compact: bool = False):
-        self.compact = compact
-
-    def render_tree(self, dependencies: Dict[str, Set[str]], root: str) -> str:
+    def _render(self, dependencies: Dict[str, Set[str]], root: str, tree: bool, max_depth=None) -> str:
         if root not in dependencies:
-            return f"{root}\n(No dependencies found)"
+            return f'{root}\n(No dependencies found)'
 
-        lines = [root]
-        visited = {root}
+        lines = []
+        expanded = set()
+        # A path detects recursion; expanded tracks nodes already shown elsewhere.
+        pending = [(root, '', '', frozenset(), 0)]
+        while pending:
+            node, prefix, connector, ancestors, depth = pending.pop()
+            if node in ancestors:
+                lines.append(f'{prefix}{connector}{node} (circular)')
+                continue
+            if node in expanded:
+                lines.append(f'{prefix}{connector}{node} (shared)')
+                continue
 
-        def render_node(node: str, prefix: str, is_last: bool, depth: int = 0):
-            if depth > 20:
-                return
-
-            if node not in dependencies:
-                return
-
-            deps = sorted(dependencies[node])
-
-            for i, dep in enumerate(deps):
-                is_last_child = (i == len(deps) - 1)
-
-                if is_last_child:
-                    connector = "└── "
-                    extension = "    "
+            children = sorted(dependencies.get(node, set()))
+            if children and max_depth is not None and depth >= max_depth:
+                lines.append(f'{prefix}{connector}{node} (depth limit)')
+                continue
+            lines.append(f'{prefix}{connector}{node}')
+            expanded.add(node)
+            child_prefix = prefix
+            if connector:
+                if tree:
+                    child_prefix += '    ' if connector == '└── ' else '│   '
                 else:
-                    connector = "├── "
-                    extension = "│   "
-
-                if dep in visited:
-                    lines.append(f"{prefix}{connector}{dep} (circular)")
+                    child_prefix += '  '
+            elif not tree:
+                child_prefix = '  '
+            for index in range(len(children) - 1, -1, -1):
+                if tree:
+                    child_connector = '└── ' if index == len(children) - 1 else '├── '
                 else:
-                    lines.append(f"{prefix}{connector}{dep}")
-                    visited.add(dep)
-                    render_node(dep, prefix + extension, is_last_child, depth + 1)
+                    child_connector = '→ '
+                pending.append((children[index], child_prefix, child_connector, ancestors | {node}, depth + 1))
 
-        render_node(root, "", True)
-        return "\n".join(lines)
+        return '\n'.join(lines)
 
-    def render_list(self, dependencies: Dict[str, Set[str]], root: str) -> str:
+    def render_tree(self, dependencies: Dict[str, Set[str]], root: str, max_depth=None) -> str:
+        return self._render(dependencies, root, tree=True, max_depth=max_depth)
+
+    def render_list(self, dependencies: Dict[str, Set[str]], root: str, max_depth=None) -> str:
+        return self._render(dependencies, root, tree=False, max_depth=max_depth)
+
+    def render_summary(self, dependencies: Dict[str, Set[str]], root: str, max_depth=None) -> str:
         if root not in dependencies:
-            return f"{root}\n  (No dependencies found)"
+            return f'Function: {root}\nNo dependencies found.'
 
-        lines = [root]
-        visited = {root}
+        reachable = set()
+        pending = [root]
+        while pending:
+            node = pending.pop()
+            if node in reachable:
+                continue
+            reachable.add(node)
+            pending.extend(dependencies.get(node, set()) - reachable)
+        reachable.discard(root)
 
-        def render_deps(node: str, indent: int):
-            if indent > 20 or node not in dependencies:
-                return
-
-            deps = sorted(dependencies[node])
-            prefix = "  " * indent + "→ "
-
-            for dep in deps:
-                if dep in visited:
-                    lines.append(f"{prefix}{dep} (circular)")
-                else:
-                    lines.append(f"{prefix}{dep}")
-                    visited.add(dep)
-                    render_deps(dep, indent + 1)
-
-        render_deps(root, 1)
-        return "\n".join(lines)
-
-    def render_summary(self, dependencies: Dict[str, Set[str]], root: str) -> str:
-        if root not in dependencies:
-            return f"Function: {root}\nNo dependencies found."
-
-        total_deps = set()
-
-        def collect_deps(node: str, visited: Set[str]):
-            if node in visited or node not in dependencies:
-                return
-            visited.add(node)
-            for dep in dependencies[node]:
-                total_deps.add(dep)
-                collect_deps(dep, visited)
-
-        collect_deps(root, set())
-
-        direct_deps = dependencies.get(root, set())
-
-        lines = [
-            f"Function: {root}",
-            f"Direct dependencies: {len(direct_deps)}",
-            f"Total dependencies: {len(total_deps)}",
-            "",
-            "Dependency tree:"
-        ]
-
-        tree = self.render_tree(dependencies, root)
-        lines.append(tree)
-
-        return "\n".join(lines)
+        return '\n'.join([
+            f'Function: {root}',
+            f'Direct dependencies: {len(dependencies[root])}',
+            f'Total dependencies: {len(reachable)}',
+            '',
+            'Dependency tree:',
+            self.render_tree(dependencies, root, max_depth=max_depth),
+        ])

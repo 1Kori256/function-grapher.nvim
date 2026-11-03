@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 
 import ast
+import builtins
 import sys
+import tokenize
+from collections import deque
 from pathlib import Path
 from typing import Set, Dict, Tuple, Optional
 
@@ -10,7 +13,19 @@ class FunctionCallVisitor(ast.NodeVisitor):
 
     def __init__(self):
         self.calls: Set[str] = set()
-        self.depth = 0
+
+    # Defining a function does not execute its body in the enclosing function.
+    def visit_FunctionDef(self, node):
+        for expression in node.decorator_list + node.args.defaults + node.args.kw_defaults:
+            if expression is not None:
+                self.visit(expression)
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_Lambda(self, node):
+        for expression in node.args.defaults + node.args.kw_defaults:
+            if expression is not None:
+                self.visit(expression)
 
     def visit_Call(self, node):
         call_name = self._get_call_name(node.func)
@@ -76,18 +91,16 @@ class FunctionAnalyzer(ast.NodeVisitor):
         filtered = set()
         for call in calls:
             base_module = call.split('.')[0]
-            if base_module in self.stdlib_modules or base_module in dir(__builtins__):
+            if base_module in self.stdlib_modules or base_module in vars(builtins):
                 continue
             filtered.add(call)
         return filtered
 
     def analyze(self, source_code: str):
-        try:
-            tree = ast.parse(source_code)
-            self.visit(tree)
-        except SyntaxError as e:
-            print(f"Syntax error in {self.file_path}: {e}", file=sys.stderr)
-            raise
+        tree = ast.parse(source_code, filename=str(self.file_path))
+        self.functions.clear()
+        self.function_lines.clear()
+        self.visit(tree)
 
 
 class DependencyResolver:
@@ -98,55 +111,49 @@ class DependencyResolver:
         self.function_locations: Dict[str, Tuple[str, int, int]] = {}
 
     def scan_file(self, file_path: Path):
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                source = f.read()
+        with tokenize.open(file_path) as source_file:
+            source = source_file.read()
 
-            analyzer = FunctionAnalyzer(str(file_path))
-            analyzer.analyze(source)
+        analyzer = FunctionAnalyzer(str(file_path))
+        analyzer.analyze(source)
 
-            for func_name, deps in analyzer.functions.items():
-                qualified_name = f"{file_path.stem}.{func_name}"
-                self.all_functions[qualified_name] = deps
-
-                if func_name in analyzer.function_lines:
-                    start, end = analyzer.function_lines[func_name]
-                    self.function_locations[qualified_name] = (str(file_path), start, end)
-
-            for func_name, deps in analyzer.functions.items():
-                if func_name not in self.all_functions:
-                    self.all_functions[func_name] = deps
-                    if func_name in analyzer.function_lines:
-                        start, end = analyzer.function_lines[func_name]
-                        self.function_locations[func_name] = (str(file_path), start, end)
-
-        except Exception as e:
-            print(f"Error scanning {file_path}: {e}", file=sys.stderr)
+        for func_name, deps in analyzer.functions.items():
+            qualified_name = f"{file_path.stem}.{func_name}"
+            start, end = analyzer.function_lines[func_name]
+            location = (str(file_path), start, end)
+            self.all_functions[qualified_name] = deps
+            self.function_locations[qualified_name] = location
+            if func_name not in self.all_functions:
+                self.all_functions[func_name] = deps
+                self.function_locations[func_name] = location
 
     def scan_directory(self):
+        if not self.root_path.exists():
+            raise FileNotFoundError(f"Path does not exist: {self.root_path}")
         if self.root_path.is_file():
             self.scan_file(self.root_path)
         else:
-            for py_file in self.root_path.rglob('*.py'):
-                if '__pycache__' not in str(py_file):
+            for py_file in sorted(self.root_path.rglob('*.py')):
+                if '__pycache__' not in py_file.parts:
                     self.scan_file(py_file)
 
     def get_dependencies(self, function_name: str, max_depth: int = 10) -> Dict[str, Set[str]]:
+        if max_depth < 0:
+            raise ValueError("Maximum depth must be non-negative")
+        if function_name not in self.all_functions:
+            raise ValueError(f"Function not found: {function_name}")
+
         result = {}
         visited = set()
-
-        def recurse(func: str, depth: int):
-            if depth > max_depth or func in visited:
-                return
-
+        pending = deque([(function_name, 0)])
+        # Breadth-first traversal reaches shared dependencies by their shortest path.
+        while pending:
+            func, depth = pending.popleft()
+            if func in visited:
+                continue
             visited.add(func)
-
             if func in self.all_functions:
-                deps = self.all_functions[func]
+                deps = set(self.all_functions[func]) if depth < max_depth else set()
                 result[func] = deps
-
-                for dep in deps:
-                    recurse(dep, depth + 1)
-
-        recurse(function_name, 0)
+                pending.extend((dep, depth + 1) for dep in sorted(deps))
         return result

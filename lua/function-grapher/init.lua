@@ -24,6 +24,7 @@ local location_metadata = {}
 local source_file_path = nil
 local output_buf = nil
 local output_win = nil
+local request_id = 0
 
 local function run_analyzer(file_path, function_name, callback)
   local python_path = get_python_path()
@@ -40,12 +41,16 @@ local function run_analyzer(file_path, function_name, callback)
 
   local output = {}
   local stderr_output = {}
+  local locations = {}
   local job_id = vim.fn.jobstart(args, {
+    stdout_buffered = true,
+    stderr_buffered = true,
     on_stdout = function(_, data, _)
       for _, line in ipairs(data) do
-        if line ~= "" then
-          table.insert(output, line)
-        end
+        table.insert(output, line)
+      end
+      if output[#output] == '' then
+        table.remove(output)
       end
     end,
     on_stderr = function(_, data, _)
@@ -55,7 +60,7 @@ local function run_analyzer(file_path, function_name, callback)
             local json_str = line:sub(14)
             local ok, decoded = pcall(vim.json.decode, json_str)
             if ok then
-              location_metadata = decoded.locations or {}
+              locations = decoded.locations or {}
             end
           else
             table.insert(stderr_output, line)
@@ -65,7 +70,7 @@ local function run_analyzer(file_path, function_name, callback)
     end,
     on_exit = function(_, exit_code, _)
       if exit_code == 0 then
-        callback(output, location_metadata)
+        callback(output, locations)
       else
         for _, err in ipairs(stderr_output) do
           vim.notify("Function Grapher: " .. err, vim.log.levels.ERROR)
@@ -148,9 +153,10 @@ local function create_output_window()
 end
 
 local function extract_function_from_line(line)
-  local cleaned = line:gsub('[├└│─]', ''):gsub('^%s+', ''):gsub('%s+$', '')
-  cleaned = cleaned:gsub('%s*%(circular%)', '')
-  local func_name = cleaned:match('^([%w_.]+)')
+  local cleaned = line:gsub('├── ', ''):gsub('└── ', ''):gsub('│', ''):gsub('→ ', '')
+  cleaned = cleaned:gsub('%s*%(circular%)', ''):gsub('%s*%(shared%)', '')
+  cleaned = cleaned:gsub('%s*%(depth limit%)', '')
+  local func_name = cleaned:match('^%s*([^%s()]+)%s*$')
   return func_name
 end
 
@@ -300,9 +306,13 @@ function M.graph_function(args)
 
   vim.notify("Analyzing function: " .. function_name .. "...", vim.log.levels.INFO)
 
-  source_file_path = file_path
-
+  request_id = request_id + 1
+  local current_request = request_id
   run_analyzer(file_path, function_name, function(output, locations)
+    if current_request ~= request_id then
+      return
+    end
+    source_file_path = file_path
     display_output(output, locations)
   end)
 end
