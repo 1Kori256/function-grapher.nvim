@@ -1,133 +1,60 @@
 # function-grapher.nvim
 
-A Neovim plugin for visualizing Python function dependencies using AST analysis and ASCII graph rendering.
+Explore Python function calls without leaving Neovim. Uses Python's AST to build a
+call graph, displayed in a split or floating window.
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
+```text
+main
+├── process_data
+│   ├── load_data
+│   ├── normalize
+│   └── summarize
+└── save_report
+    ├── load_data (shared)
+    └── summarize (shared)
+```
 
-## Features
+`(shared)` means the function appears elsewhere in the graph. `(circular)` marks
+a call back to an ancestor. Built-ins and calls prefixed with standard-library
+module names are hidden.
 
-- 📊 **AST-based Analysis**: Uses Python's built-in AST module for accurate dependency extraction
-- 🎨 **ASCII Visualization**: Clean tree-based dependency graphs
-- 🔍 **Smart Filtering**: Default mode excludes standard library calls
-- ⚡ **Async Execution**: Non-blocking analysis using Neovim's job control
-- 🎯 **LSP Integration**: Jump to definitions using LSP (supports venv packages)
-- 🪟 **Flexible Display**: Multiple window positioning options
+## Install
 
-## Requirements
+Requires Neovim 0.9+ and Python 3.10+. No Python packages needed.
 
-- Neovim >= 0.7.0
-- Python 3.6+
-- LSP server (pylsp or pyright) for jump-to-definition
-
-## Installation
-
-### [lazy.nvim](https://github.com/folke/lazy.nvim)
+With [lazy.nvim](https://github.com/folke/lazy.nvim):
 
 ```lua
 {
   '1Kori256/function-grapher.nvim',
-  config = function()
-    require('function-grapher').setup()
-  end,
+  opts = {},
 }
 ```
 
-### [packer.nvim](https://github.com/wbthomason/packer.nvim)
+Other plugin managers work too; call `require('function-grapher').setup()` to
+configure the plugin.
 
-```lua
-use {
-  '1Kori256/function-grapher.nvim',
-  config = function()
-    require('function-grapher').setup()
-  end
-}
-```
+## Use
 
-### [vim-plug](https://github.com/junegunn/vim-plug)
+Open a saved Python file, then run:
 
 ```vim
-Plug '1Kori256/function-grapher.nvim'
+:FunctionGraph main
+:FunctionGraph              " Name under the cursor
+:FunctionGraphSetStyle list " tree, list, or summary
 ```
 
-Then in your `init.lua`:
-```lua
-require('function-grapher').setup()
-```
+In the graph, use `j`/`k` to move, `<Enter>` to jump to a definition, and `q` to
+close. Local definitions use recorded source locations; external calls require
+an attached Python LSP server. Analysis runs asynchronously and reads saved files.
 
-## Usage
-
-### Commands
-
-#### `:FunctionGraph [function_name]`
-Graph the dependencies of a function.
-
-```vim
-:FunctionGraph process_data  " Graph specific function
-:FunctionGraph               " Graph function under cursor
-```
-
-#### `:FunctionGraphSetStyle <style>`
-Set the visualization style: `tree`, `list`, or `summary`.
-
-### Keymaps
-
-Example configuration:
+Optional keymap:
 
 ```lua
-vim.keymap.set('n', '<leader>fg', ':FunctionGraph<CR>', { desc = 'Graph function' })
+vim.keymap.set('n', '<leader>fg', '<cmd>FunctionGraph<CR>')
 ```
 
-### Interactive Navigation
-
-In the graph window:
-- `j`/`k` - Navigate up/down
-- `<Enter>` - Jump to function definition (uses LSP)
-- `q` - Close the graph window
-
-## Visualization
-
-### Tree Style (Default)
-
-```
-main
-├── process_data
-│   ├── validate_input
-│   └── transform
-│       └── helper
-└── save_results
-    └── write_file
-```
-
-### List Style
-
-```
-main
-  → process_data
-    → validate_input
-    → transform
-      → helper
-  → save_results
-    → write_file
-```
-
-### Summary Style
-
-```
-Function: main
-Direct dependencies: 2
-Total dependencies: 5
-
-Dependency tree:
-main
-├── process_data
-│   ├── validate_input
-│   └── transform
-│       └── helper
-└── save_results
-    └── write_file
-```
-
-## Configuration
+## Configure
 
 ```lua
 require('function-grapher').setup({
@@ -135,48 +62,42 @@ require('function-grapher').setup({
   style = 'tree',
   python_cmd = 'python3',
   window = {
-    position = 'right',
+    position = 'right', -- left, below, above, or float
     width = 60,
     height = 20,
   },
 })
 ```
 
-### Options
+`max_depth` limits call expansion; `0` shows only the root. Calls at the limit
+may still have dependencies that are not displayed.
 
-- `max_depth` - Maximum recursion depth for dependencies (default: `10`)
-- `style` - Visualization style: `'tree'`, `'list'`, or `'summary'` (default: `'tree'`)
-- `python_cmd` - Python executable to use (default: `'python3'`)
-- `window.position` - Window position: `'right'`, `'left'`, `'below'`, `'above'`, `'float'` (default: `'right'`)
-- `window.width` - Width for vertical splits (default: `60`)
-- `window.height` - Height for horizontal splits (default: `20`)
+## CLI
 
-**Note:** The plugin automatically filters out Python standard library and built-in functions to show only your code and third-party dependencies.
+From this repository:
 
-## How It Works
-
-1. **AST Parsing**: Parses Python source using the `ast` module
-2. **Dependency Extraction**: Walks the AST to find function calls
-3. **Filtering**: Filters out stdlib and built-in functions
-4. **Graph Building**: Recursively resolves dependencies
-5. **Rendering**: Converts the graph to ASCII art
-6. **LSP Integration**: Uses LSP for jump-to-definition functionality
-
-## Python CLI
-
-The plugin includes a standalone CLI tool:
-
-```bash
-cd python
-python3 function_grapher.py myfile.py my_function
-python3 function_grapher.py myfile.py my_function --style=summary
-python3 function_grapher.py myfile.py my_function --max-depth=5
+```sh
+python3 python/function_grapher.py examples/pipeline.py main
+python3 python/function_grapher.py examples/pipeline.py main --style summary
+python3 python/function_grapher.py examples/pipeline.py main --max-depth 2 --json
 ```
 
-## License
+Text goes to stdout; source locations go to stderr with a `__LOCATIONS__` prefix
+for the plugin. `--json` writes both to stdout. Invalid input exits nonzero.
 
-MIT
+## Limits
 
-## Contributing
+This is a static call graph, not an execution trace. Dynamic dispatch, import
+aliases, and receiver types such as `self.method()` are not resolved. Duplicate
+function or method names can be ambiguous. Directory scans accept `file.function`
+as a root, but do not resolve imports between files. Standard-library filtering
+uses names, so aliases and shadowed names can produce incorrect results.
 
-Contributions are welcome! Please feel free to submit issues or pull requests.
+## Development
+
+```sh
+python3 -m unittest discover -s tests -v
+nvim -n --headless -u NONE -i NONE -c 'luafile tests/test_neovim.lua'
+```
+
+MIT license.

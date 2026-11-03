@@ -1,66 +1,54 @@
 #!/usr/bin/env python3
 
-import sys
+import argparse
 import json
+import sys
+
 from analyzer import DependencyResolver
 from graph_renderer import ASCIIGraphRenderer
 
 
-def main():
-    if len(sys.argv) < 3:
-        print("Usage: function_grapher.py <file> <function> [options]", file=sys.stderr)
-        print("Options:", file=sys.stderr)
-        print("  --style=<tree|list|summary>: Output style (default: tree)", file=sys.stderr)
-        print("  --max-depth=N: Maximum recursion depth (default: 10)", file=sys.stderr)
-        print("  --json: Output as JSON", file=sys.stderr)
-        sys.exit(1)
+def non_negative_int(value):
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError('must be non-negative')
+    return number
 
-    file_path = sys.argv[1]
-    function_name = sys.argv[2]
 
-    output_json = '--json' in sys.argv
-    max_depth = 10
-    style = 'tree'
+def main(argv=None):
+    parser = argparse.ArgumentParser(description='Graph Python function dependencies.')
+    parser.add_argument('path', help='Python file or directory to scan')
+    parser.add_argument('function', help='Function name, optionally prefixed by file stem')
+    parser.add_argument('--style', choices=('tree', 'list', 'summary'), default='tree')
+    parser.add_argument('--max-depth', type=non_negative_int, default=10,
+                        help='Maximum call distance from the root (default: 10)')
+    parser.add_argument('--json', action='store_true', help='Output graph and locations as JSON')
+    args = parser.parse_args(argv)
 
-    for arg in sys.argv[3:]:
-        if arg.startswith('--max-depth='):
-            max_depth = int(arg.split('=')[1])
-        elif arg.startswith('--style='):
-            style = arg.split('=')[1]
+    resolver = DependencyResolver(args.path)
+    try:
+        resolver.scan_directory()
+        dependencies = resolver.get_dependencies(args.function, args.max_depth)
+    except (OSError, UnicodeError, SyntaxError, ValueError) as error:
+        parser.exit(1, f'{parser.prog}: {error}\n')
 
-    resolver = DependencyResolver(file_path)
-    resolver.scan_directory()
-
-    dependencies = resolver.get_dependencies(function_name, max_depth)
-
-    if output_json:
-        output = {
-            'function': function_name,
-            'dependencies': {k: list(v) for k, v in dependencies.items()},
-            'locations': resolver.function_locations
-        }
-        print(json.dumps(output, indent=2))
+    if args.json:
+        print(json.dumps({
+            'function': args.function,
+            'dependencies': {name: sorted(calls) for name, calls in dependencies.items()},
+            'locations': resolver.function_locations,
+        }, indent=2, sort_keys=True))
     else:
         renderer = ASCIIGraphRenderer()
-
-        if style == 'tree':
-            output = renderer.render_tree(dependencies, function_name)
-        elif style == 'list':
-            output = renderer.render_list(dependencies, function_name)
-        elif style == 'summary':
-            output = renderer.render_summary(dependencies, function_name)
-        else:
-            print(f"Unknown style: {style}", file=sys.stderr)
-            sys.exit(1)
-
-        print(output)
-
+        render = getattr(renderer, 'render_' + args.style)
+        print(render(dependencies, args.function, max_depth=args.max_depth))
         location_data = {
-            'locations': {k: {'file': v[0], 'line': v[1], 'end_line': v[2]}
-                         for k, v in resolver.function_locations.items()}
+            'locations': {name: {'file': loc[0], 'line': loc[1], 'end_line': loc[2]}
+                          for name, loc in resolver.function_locations.items()}
         }
-        print("__LOCATIONS__" + json.dumps(location_data), file=sys.stderr)
+        print('__LOCATIONS__' + json.dumps(location_data, sort_keys=True), file=sys.stderr)
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
